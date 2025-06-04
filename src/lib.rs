@@ -1,4 +1,6 @@
 #![allow(non_snake_case)]
+#![allow(non_upper_case_globals)]
+#![allow(unused_parens)]
 mod utils;
 
 use std::cmp::PartialEq;
@@ -18,15 +20,24 @@ extern "C" {
     fn fill3DRect(x: i32, y: i32, w: i32, h: i32, r: u8, g: u8, b: u8, t: i32, raised: bool);
     fn drawCross(x: i32, y: i32, s: i32, r: u8, g: u8, b: u8, t: i32);
     fn drawCircle(x: i32, y: i32, s: i32, r: u8, g: u8, b: u8, t: i32);
+    fn getConnectionRequest();
+    fn getConnectionResponse();
+    fn setRemoteDesc();
+    fn sendData(str: &str);
+    fn setStatus(str: &str);
 }
 
-static BoxSize: i32 = 45;
-static BoxBorder: i32 = 1;
-static GridSize: i32 = 15;
+static BOX_SIZE: i32 = 45;
+static BOX_BORDER: i32 = 1;
+static GRID_SIZE: i32 = 15;
 
-static Move: LazyLock<Mutex<bool>> = LazyLock::new(|| Mutex::new(false));
-static offsetX: LazyLock<Mutex<i32>> = LazyLock::new(|| Mutex::new(0));
-static offsetY: LazyLock<Mutex<i32>> = LazyLock::new(|| Mutex::new(0));
+static Move: LazyLock<Mutex<i32>> = LazyLock::new(|| Mutex::new(0));
+
+static OppGameStart: LazyLock<Mutex<i32>> = LazyLock::new(|| Mutex::new(-1));
+static PlayerGameStart: LazyLock<Mutex<i32>> = LazyLock::new(|| Mutex::new(-1));
+static OffsetX: LazyLock<Mutex<i32>> = LazyLock::new(|| Mutex::new(0));
+static OffsetY: LazyLock<Mutex<i32>> = LazyLock::new(|| Mutex::new(0));
+static Player: LazyLock<Mutex<i32>> = LazyLock::new(|| Mutex::new(-1));
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum State {
@@ -41,7 +52,7 @@ static gameState: LazyLock<Mutex<HashMap<(i32, i32), State>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn getState(x: i32, y: i32) -> State {
-    for (key, val) in gameState.lock().expect("Game state should exist").iter() {
+    for (key, val) in gameState.lock().unwrap().iter() {
         if (key.0 == x && key.1 == y) {
             return val.clone();
         }
@@ -50,24 +61,30 @@ fn getState(x: i32, y: i32) -> State {
 }
 
 fn setState(x: i32, y: i32, s: State) {
-    for (key, val) in gameState
-        .lock()
-        .expect("Game state should exist")
-        .iter_mut()
-    {
+    for (key, val) in gameState.lock().unwrap().iter_mut() {
         if (key.0 == x && key.1 == y) {
             *val = s;
             break;
         }
     }
-    gameState
-        .lock()
-        .expect("Game state should exist")
-        .insert((x, y), s);
+    gameState.lock().unwrap().insert((x, y), s);
 }
 
 fn resetState() {
-    let mut currGameState = gameState.lock().expect("Game state should exist");
+    *Move.lock().unwrap() = 0;
+    *PlayerGameStart.lock().unwrap() = -1;
+    *OppGameStart.lock().unwrap() = -1;
+    *OffsetX.lock().unwrap() = 0;
+    *OffsetY.lock().unwrap() = 0;
+
+    if (*Player.lock().unwrap() == 1) {
+        setStatus("New Game Started, Your turn to Place");
+    } else {
+        setStatus("New Game Started, Opponent's turn to Place");
+    }
+
+    let mut currGameState = gameState.lock().unwrap();
+
     currGameState.clear();
 
     currGameState.insert((-2, -1), State::Activatable);
@@ -97,114 +114,103 @@ fn resetState() {
     currGameState.insert((2, 1), State::Activatable);
 }
 
-fn render() {
+#[wasm_bindgen]
+pub fn render() {
     let width = getWindowWidth();
     let height = getWindowHeight();
     fillRect(0, 0, width, height, 32, 32, 48);
-    for i in 0..GridSize {
-        for j in 0..GridSize {
-            let x = i - 7 + *offsetX.lock().expect("offset is initialised");
-            let y = j - 7 + *offsetY.lock().expect("offset is initialised");
+    for i in 0..GRID_SIZE {
+        for j in 0..GRID_SIZE {
+            let x = i - 7 + *OffsetX.lock().unwrap();
+            let y = j - 7 + *OffsetY.lock().unwrap();
             match getState(x, y) {
                 State::Inactive => {
                     fill3DRect(
-                        BoxSize + i * BoxSize,
-                        BoxSize + j * BoxSize,
-                        BoxSize,
-                        BoxSize,
+                        BOX_SIZE + i * BOX_SIZE,
+                        BOX_SIZE + j * BOX_SIZE,
+                        BOX_SIZE,
+                        BOX_SIZE,
                         96,
                         96,
                         96,
-                        BoxBorder,
+                        BOX_BORDER,
                         true,
                     );
                 }
                 State::Activatable => {
                     fill3DRect(
-                        BoxSize + i * BoxSize,
-                        BoxSize + j * BoxSize,
-                        BoxSize,
-                        BoxSize,
+                        BOX_SIZE + i * BOX_SIZE,
+                        BOX_SIZE + j * BOX_SIZE,
+                        BOX_SIZE,
+                        BOX_SIZE,
                         128,
                         192,
                         64,
-                        BoxBorder,
+                        BOX_BORDER,
                         false,
                     );
                 }
                 State::Active => {
                     fill3DRect(
-                        BoxSize + i * BoxSize,
-                        BoxSize + j * BoxSize,
-                        BoxSize,
-                        BoxSize,
+                        BOX_SIZE + i * BOX_SIZE,
+                        BOX_SIZE + j * BOX_SIZE,
+                        BOX_SIZE,
+                        BOX_SIZE,
                         0,
                         160,
                         224,
-                        BoxBorder,
+                        BOX_BORDER,
                         false,
                     );
                 }
                 State::Cross => {
                     fill3DRect(
-                        BoxSize + i * BoxSize,
-                        BoxSize + j * BoxSize,
-                        BoxSize,
-                        BoxSize,
+                        BOX_SIZE + i * BOX_SIZE,
+                        BOX_SIZE + j * BOX_SIZE,
+                        BOX_SIZE,
+                        BOX_SIZE,
                         0,
                         160,
                         224,
-                        BoxBorder,
+                        BOX_BORDER,
                         false,
                     );
                     drawCross(
-                        BoxSize + i * BoxSize + BoxSize / 2 + 1,
-                        BoxSize + j * BoxSize + BoxSize / 2 + 1,
-                        (BoxSize - BoxBorder * 16) / 2,
+                        BOX_SIZE + i * BOX_SIZE + BOX_SIZE / 2 + 1,
+                        BOX_SIZE + j * BOX_SIZE + BOX_SIZE / 2 + 1,
+                        (BOX_SIZE - BOX_BORDER * 16) / 2,
                         255,
                         128,
                         32,
-                        BoxBorder * 4,
+                        BOX_BORDER * 4,
                     );
                 }
                 State::Circle => {
                     fill3DRect(
-                        BoxSize + i * BoxSize,
-                        BoxSize + j * BoxSize,
-                        BoxSize,
-                        BoxSize,
+                        BOX_SIZE + i * BOX_SIZE,
+                        BOX_SIZE + j * BOX_SIZE,
+                        BOX_SIZE,
+                        BOX_SIZE,
                         0,
                         160,
                         224,
-                        BoxBorder,
+                        BOX_BORDER,
                         false,
                     );
                     drawCircle(
-                        BoxSize + i * BoxSize + BoxSize / 2 + 1,
-                        BoxSize + j * BoxSize + BoxSize / 2 + 1,
-                        (BoxSize - BoxBorder * 16) / 2,
+                        BOX_SIZE + i * BOX_SIZE + BOX_SIZE / 2 + 1,
+                        BOX_SIZE + j * BOX_SIZE + BOX_SIZE / 2 + 1,
+                        (BOX_SIZE - BOX_BORDER * 16) / 2,
                         255,
                         128,
                         32,
-                        BoxBorder * 4,
+                        BOX_BORDER * 4,
                     );
                 }
             }
         }
     }
 }
-
-/*impl PartialEq<Self> for state {
-    fn eq(&self, other: &Self) -> bool {
-        match self {
-            state::Inactive => matches!(other, state::Inactive),
-            state::Activatable => matches!(other, state::Activatable),
-            state::Active => matches!(other, state::Active),
-            state::Cross => matches!(other, state::Cross),
-            state::Circle => matches!(other, state::Circle),
-        }
-    }
-}*/
 
 fn checkWin(x: i32, y: i32) -> i32 {
     let clickedState = getState(x, y);
@@ -297,44 +303,21 @@ fn checkWin(x: i32, y: i32) -> i32 {
     {
         return win;
     }
-    return 0;
+    0
 }
 
-#[wasm_bindgen]
-pub fn reset() {
-    resetState();
-    render();
-}
-
-#[wasm_bindgen]
-pub fn handleKeyDown(key: &str) {
-    match key {
-        "ArrowUp" | "w" => {
-            *offsetY.lock().expect("Offset is set") -= 1;
-        }
-        "ArrowRight" | "d" => {
-            *offsetX.lock().expect("Offset is set") += 1;
-        }
-        "ArrowDown" | "s" => {
-            *offsetY.lock().expect("Offset is set") += 1;
-        }
-        "ArrowLeft" | "a" => {
-            *offsetX.lock().expect("Offset is set") -= 1;
-        }
-        _ => {}
-    }
-    render();
-}
-
-#[wasm_bindgen]
-pub fn handleMouseClick(mouseX: i32, mouseY: i32) -> i32 {
-    let gridX = (mouseX - BoxSize) / BoxSize;
-    let gridY = (mouseY - BoxSize) / BoxSize;
-    if (gridX >= 0 && gridY >= 0 && gridX < GridSize && gridY < GridSize) {
-        let x = gridX - 7 + *offsetX.lock().expect("offset is set");
-        let y = gridY - 7 + *offsetY.lock().expect("offset is set");
-        match getState(x, y) {
-            State::Activatable => {
+fn doPlayerClick(x: i32, y: i32, player: i32) -> bool {
+    let currMove = *Move.lock().unwrap();
+    match getState(x, y) {
+        State::Activatable => {
+            if (currMove == 1 && player == 1 || currMove == 3 && player == 2) {
+                *Move.lock().unwrap() += 1;
+                *Move.lock().unwrap() %= 4;
+                if (player == *Player.lock().unwrap()) {
+                    setStatus("Opponent's turn to Place");
+                } else {
+                    setStatus("Your turn to Place");
+                }
                 setState(x, y, State::Active);
                 if (getState(x - 1, y) == State::Inactive) {
                     setState(x - 1, y, State::Activatable);
@@ -395,18 +378,165 @@ pub fn handleMouseClick(mouseX: i32, mouseY: i32) -> i32 {
                     }
                 }
                 render();
+                return true;
             }
-            State::Active => {
-                if (randRange(0, 2) == 1) {
+        }
+        State::Active => {
+            if (currMove == 0 && player == 1 || currMove == 2 && player == 2) {
+                *Move.lock().unwrap() += 1;
+                *Move.lock().unwrap() %= 4;
+                if (player == *Player.lock().unwrap()) {
+                    setStatus("Your turn to Expand");
+                } else {
+                    setStatus("Opponent's turn to Expand");
+                }
+                if (player == 1) {
                     setState(x, y, State::Cross);
                 } else {
                     setState(x, y, State::Circle);
                 }
                 render();
-                return checkWin(x, y);
+                return true;
             }
-            _ => {}
+        }
+        _ => {}
+    }
+    false
+}
+
+
+fn reset() {
+    resetState();
+    render();
+}
+
+#[wasm_bindgen]
+pub fn handleKeyDown(key: &str) {
+    match key {
+        "ArrowUp" => {
+            *OffsetY.lock().unwrap() -= 1;
+        }
+        "ArrowRight" => {
+            *OffsetX.lock().unwrap() += 1;
+        }
+        "ArrowDown" => {
+            *OffsetY.lock().unwrap() += 1;
+        }
+        "ArrowLeft" => {
+            *OffsetX.lock().unwrap() -= 1;
+        }
+        " " => {
+            *OffsetX.lock().unwrap() = 0;
+            *OffsetY.lock().unwrap() = 0;
+        }
+        "Enter" => {
+            if (*Move.lock().unwrap() == -1) {
+                if (*OppGameStart.lock().unwrap() == 0) {
+                    *PlayerGameStart.lock().unwrap() = 1;
+                    setStatus("Waiting for Opponent to Start New Game");
+                    sendData("Start:");
+                } else if (*OppGameStart.lock().unwrap() == 1) {
+                    *Move.lock().unwrap() = 0;
+                    sendData("Start:");
+                    reset();
+                }
+            }
+        }
+        _ => {}
+    }
+    render();
+}
+
+#[wasm_bindgen]
+pub fn handleMouseClick(mouseX: i32, mouseY: i32) {
+    let gridX = (mouseX - BOX_SIZE) / BOX_SIZE;
+    let gridY = (mouseY - BOX_SIZE) / BOX_SIZE;
+    if (gridX >= 0 && gridY >= 0 && gridX < GRID_SIZE && gridY < GRID_SIZE) {
+        let x = gridX - 7 + *OffsetX.lock().unwrap();
+        let y = gridY - 7 + *OffsetY.lock().unwrap();
+        let currPlayer = *Player.lock().unwrap();
+
+        let validClick = doPlayerClick(x, y, currPlayer);
+        if (validClick) {
+            sendData(format!("Move:{},{}", x, y).as_str());
+            let win = checkWin(x, y);
+            if (win == currPlayer) {
+                sendData(format!("Win:{},{}", x, y).as_str());
+                setStatus("Your Won, Press Enter to Start a New Game");
+                *Player.lock().unwrap() = 3 - currPlayer;
+                *Move.lock().unwrap() = -1;
+                *OppGameStart.lock().unwrap() = 0;
+                *PlayerGameStart.lock().unwrap() = 0;
+            }
         }
     }
-    0
+}
+
+#[wasm_bindgen]
+pub fn handleDataIn(data: &str) {
+    if (data.starts_with("Join:")) {
+        if (data.replace("Join:", "").parse::<i32>().is_err()) {
+            return;
+        }
+
+        let oppPlayer = data.replace("Join:", "").parse::<i32>().unwrap();
+        *Player.lock().unwrap() = 3 - oppPlayer;
+        reset();
+    } else if (data.starts_with("Move:")) {
+        let currPlayer = *Player.lock().unwrap();
+        let tuple = data.replace("Move:", "");
+        if (tuple.split(",").count() != 2
+            || tuple.split(",").next().unwrap().parse::<i32>().is_err()
+            || tuple.split(",").last().unwrap().parse::<i32>().is_err())
+        {
+            return;
+        }
+        let x = tuple.split(",").next().unwrap().parse::<i32>().unwrap();
+        let y = tuple.split(",").last().unwrap().parse::<i32>().unwrap();
+        doPlayerClick(x, y, 3 - currPlayer);
+    } else if (data.starts_with("Win:")) {
+        let tuple = data.replace("Win:", "");
+        if (tuple.split(",").count() != 2
+            || tuple.split(",").next().unwrap().parse::<i32>().is_err()
+            || tuple.split(",").last().unwrap().parse::<i32>().is_err())
+        {
+            return;
+        }
+
+        let x = tuple.split(",").next().unwrap().parse::<i32>().unwrap();
+        let y = tuple.split(",").last().unwrap().parse::<i32>().unwrap();
+        let currPlayer = *Player.lock().unwrap();
+        let win = checkWin(x, y);
+        if (win == 3 - currPlayer) {
+            setStatus("You Lost, Press Enter to Start a New Game");
+            *Player.lock().unwrap() = 3 - currPlayer;
+            *Move.lock().unwrap() = -1;
+            *OppGameStart.lock().unwrap() = 0;
+            *PlayerGameStart.lock().unwrap() = 0;
+        }
+    } else if (data.starts_with("Start:")) {
+        if (*Move.lock().unwrap() == -1) {
+            if (*PlayerGameStart.lock().unwrap() == 0) {
+                *OppGameStart.lock().unwrap() = 1;
+                setStatus("Opponent is waiting for you to Start New Game, Press Enter to Start a New Game");
+            } else if (*PlayerGameStart.lock().unwrap() == 1) {
+                *Move.lock().unwrap() = 0;
+                print("reset?");
+                reset();
+            }
+        }
+    }
+}
+
+#[wasm_bindgen]
+pub fn createRequest() {
+    getConnectionRequest();
+}
+#[wasm_bindgen]
+pub fn createResponse() {
+    getConnectionResponse();
+}
+#[wasm_bindgen]
+pub fn beginConnection() {
+    setRemoteDesc();
 }

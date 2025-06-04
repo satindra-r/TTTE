@@ -218,7 +218,7 @@ fn checkWin(x: i32, y: i32) -> i32 {
     if (clickedState == State::Cross) {
         win = 1;
     } else if (clickedState == State::Circle) {
-        win = -1;
+        win = 2;
     } else {
         return 0;
     }

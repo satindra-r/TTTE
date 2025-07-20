@@ -1,11 +1,14 @@
 import init, {
+	setHook,
 	render,
 	handleKeyDown,
 	handleMouseClick,
 	handleDataIn,
 	createRequest,
 	createResponse,
-	beginConnection
+	beginConnection,
+	enableAI,
+	handleAIMove
 } from "./pkg/LearningWASM.js";
 
 let canvas = document.getElementById("canvas");
@@ -16,6 +19,7 @@ let textArea = document.getElementById("text")
 ctx.imageSmoothingEnabled = false;
 
 init().then(() => {
+	setHook();
 	render();
 	document.addEventListener("keydown", async function (event) {
 		handleKeyDown(event.key);
@@ -33,8 +37,14 @@ init().then(() => {
 	document.getElementById("Begin Connection").addEventListener("click", function () {
 		beginConnection();
 	});
+	document.getElementById("Play Against AI").addEventListener("click", function () {
+		enableAI();
+	});
 	textArea.addEventListener("data", function () {
 		handleDataIn(textArea.value);
 		textArea.value = "";
+	})
+	textArea.addEventListener("AI",function (){
+		handleAIMove();
 	})
 });

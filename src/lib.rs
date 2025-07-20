@@ -1,10 +1,12 @@
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(unused_parens)]
-mod utils;
+extern crate console_error_panic_hook;
+mod agent;
+mod game;
 
-use std::cmp::PartialEq;
-use std::collections::HashMap;
+use crate::game::{Game, State};
+use std::panic;
 use std::sync::Mutex;
 use wasm_bindgen::__rt::LazyLock;
 use wasm_bindgen::prelude::*;
@@ -12,66 +14,54 @@ use wasm_bindgen::prelude::*;
 #[wasm_bindgen(module = "/helper.js")]
 extern "C" {
     fn print(str: &str);
-    fn getWindowWidth() -> i32;
-    fn getWindowHeight() -> i32;
-    fn randRange(x: i32, y: i32) -> i32;
-    fn drawRect(x: i32, y: i32, w: i32, h: i32, r: u8, g: u8, b: u8, t: i32);
-    fn fillRect(x: i32, y: i32, w: i32, h: i32, r: u8, g: u8, b: u8);
-    fn fill3DRect(x: i32, y: i32, w: i32, h: i32, r: u8, g: u8, b: u8, t: i32, raised: bool);
-    fn drawCross(x: i32, y: i32, s: i32, r: u8, g: u8, b: u8, t: i32);
-    fn drawCircle(x: i32, y: i32, s: i32, r: u8, g: u8, b: u8, t: i32);
+    fn getWindowWidth() -> i16;
+    fn getWindowHeight() -> i16;
+	fn rand() -> f64;
+    fn drawRect(x: i16, y: i16, w: i16, h: i16, r: u8, g: u8, b: u8, t: i16);
+    fn fillRect(x: i16, y: i16, w: i16, h: i16, r: u8, g: u8, b: u8);
+    fn fill3DRect(x: i16, y: i16, w: i16, h: i16, r: u8, g: u8, b: u8, t: i16, raised: bool);
+    fn drawCross(x: i16, y: i16, s: i16, r: u8, g: u8, b: u8, t: i16);
+    fn drawCircle(x: i16, y: i16, s: i16, r: u8, g: u8, b: u8, t: i16);
     fn getConnectionRequest();
     fn getConnectionResponse();
     fn setRemoteDesc();
     fn sendData(str: &str);
     fn setStatus(str: &str);
+    fn callAI();
 }
 
-static BOX_SIZE: i32 = 45;
-static BOX_BORDER: i32 = 1;
-static GRID_SIZE: i32 = 15;
+static BOX_SIZE: i16 = 45;
+static BOX_BORDER: i16 = 1;
+static GRID_SIZE: i16 = 15;
 
-static Move: LazyLock<Mutex<i32>> = LazyLock::new(|| Mutex::new(0));
+static DIR4: [(i16, i16); 4] = [(0, -1), (-1, 0), (1, 0), (0, 1)];
+static DIR8: [(i16, i16); 8] = [
+    (-1, -1),
+    (0, -1),
+    (1, -1),
+    (-1, 0),
+    (1, 0),
+    (-1, 1),
+    (0, 1),
+    (1, 1),
+];
 
-static OppGameStart: LazyLock<Mutex<i32>> = LazyLock::new(|| Mutex::new(-1));
-static PlayerGameStart: LazyLock<Mutex<i32>> = LazyLock::new(|| Mutex::new(-1));
-static OffsetX: LazyLock<Mutex<i32>> = LazyLock::new(|| Mutex::new(0));
-static OffsetY: LazyLock<Mutex<i32>> = LazyLock::new(|| Mutex::new(0));
-static Player: LazyLock<Mutex<i32>> = LazyLock::new(|| Mutex::new(-1));
+static OppGameStart: LazyLock<Mutex<i8>> = LazyLock::new(|| Mutex::new(-1));
+static PlayerGameStart: LazyLock<Mutex<i8>> = LazyLock::new(|| Mutex::new(-1));
+static OffsetX: LazyLock<Mutex<i16>> = LazyLock::new(|| Mutex::new(0));
+static OffsetY: LazyLock<Mutex<i16>> = LazyLock::new(|| Mutex::new(0));
+static Player: LazyLock<Mutex<i8>> = LazyLock::new(|| Mutex::new(-1));
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-enum State {
-    Inactive,
-    Activatable,
-    Active,
-    Cross,
-    Circle,
+static AI: LazyLock<Mutex<bool>> = LazyLock::new(|| Mutex::new(false));
+
+#[wasm_bindgen]
+pub fn setHook() {
+    panic::set_hook(Box::new(console_error_panic_hook::hook));
 }
 
-static gameState: LazyLock<Mutex<HashMap<(i32, i32), State>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-fn getState(x: i32, y: i32) -> State {
-    for (key, val) in gameState.lock().unwrap().iter() {
-        if (key.0 == x && key.1 == y) {
-            return val.clone();
-        }
-    }
-    State::Inactive
-}
-
-fn setState(x: i32, y: i32, s: State) {
-    for (key, val) in gameState.lock().unwrap().iter_mut() {
-        if (key.0 == x && key.1 == y) {
-            *val = s;
-            break;
-        }
-    }
-    gameState.lock().unwrap().insert((x, y), s);
-}
+static MAIN_GAME: LazyLock<Mutex<Game>> = LazyLock::new(|| Mutex::new(Game::new()));
 
 fn resetState() {
-    *Move.lock().unwrap() = 0;
     *PlayerGameStart.lock().unwrap() = -1;
     *OppGameStart.lock().unwrap() = -1;
     *OffsetX.lock().unwrap() = 0;
@@ -80,38 +70,14 @@ fn resetState() {
     if (*Player.lock().unwrap() == 1) {
         setStatus("New Game Started, Your turn to Place");
     } else {
-        setStatus("New Game Started, Opponent's turn to Place");
+		if(*AI.lock().unwrap()){
+			setStatus("New Game Started, AI's turn to Place");
+		}else{
+			setStatus("New Game Started, Opponent's turn to Place");
+		}
     }
 
-    let mut currGameState = gameState.lock().unwrap();
-
-    currGameState.clear();
-
-    currGameState.insert((-2, -1), State::Activatable);
-    currGameState.insert((-2, 0), State::Activatable);
-    currGameState.insert((-2, 1), State::Activatable);
-
-    currGameState.insert((-1, -2), State::Activatable);
-    currGameState.insert((-1, -1), State::Active);
-    currGameState.insert((-1, 0), State::Active);
-    currGameState.insert((-1, 1), State::Active);
-    currGameState.insert((-1, 2), State::Activatable);
-
-    currGameState.insert((0, -2), State::Activatable);
-    currGameState.insert((0, -1), State::Active);
-    currGameState.insert((0, 0), State::Active);
-    currGameState.insert((0, 1), State::Active);
-    currGameState.insert((0, 2), State::Activatable);
-
-    currGameState.insert((1, -2), State::Activatable);
-    currGameState.insert((1, -1), State::Active);
-    currGameState.insert((1, 0), State::Active);
-    currGameState.insert((1, 1), State::Active);
-    currGameState.insert((1, 2), State::Activatable);
-
-    currGameState.insert((2, -1), State::Activatable);
-    currGameState.insert((2, 0), State::Activatable);
-    currGameState.insert((2, 1), State::Activatable);
+    MAIN_GAME.lock().unwrap().resetState();
 }
 
 #[wasm_bindgen]
@@ -122,8 +88,8 @@ pub fn render() {
     for i in 0..GRID_SIZE {
         for j in 0..GRID_SIZE {
             let x = i - 7 + *OffsetX.lock().unwrap();
-            let y = j - 7 + *OffsetY.lock().unwrap();
-            match getState(x, y) {
+            let y = 7 - j + *OffsetY.lock().unwrap();
+            match MAIN_GAME.lock().unwrap().getState(x, y) {
                 State::Inactive => {
                     fill3DRect(
                         BOX_SIZE + i * BOX_SIZE,
@@ -150,7 +116,7 @@ pub fn render() {
                         false,
                     );
                 }
-                State::Active => {
+                State::Active(_) => {
                     fill3DRect(
                         BOX_SIZE + i * BOX_SIZE,
                         BOX_SIZE + j * BOX_SIZE,
@@ -163,7 +129,7 @@ pub fn render() {
                         false,
                     );
                 }
-                State::Cross => {
+                State::Cross(_) => {
                     fill3DRect(
                         BOX_SIZE + i * BOX_SIZE,
                         BOX_SIZE + j * BOX_SIZE,
@@ -185,7 +151,7 @@ pub fn render() {
                         BOX_BORDER * 4,
                     );
                 }
-                State::Circle => {
+                State::Circle(_) => {
                     fill3DRect(
                         BOX_SIZE + i * BOX_SIZE,
                         BOX_SIZE + j * BOX_SIZE,
@@ -212,199 +178,6 @@ pub fn render() {
     }
 }
 
-fn checkWin(x: i32, y: i32) -> i32 {
-    let clickedState = getState(x, y);
-    let win;
-    if (clickedState == State::Cross) {
-        win = 1;
-    } else if (clickedState == State::Circle) {
-        win = 2;
-    } else {
-        return 0;
-    }
-    if (getState(x - 3, y) == clickedState
-        && getState(x - 2, y) == clickedState
-        && getState(x - 1, y) == clickedState)
-    {
-        return win;
-    } else if (getState(x - 2, y) == clickedState
-        && getState(x - 1, y) == clickedState
-        && getState(x + 1, y) == clickedState)
-    {
-        return win;
-    } else if (getState(x - 1, y) == clickedState
-        && getState(x + 1, y) == clickedState
-        && getState(x + 2, y) == clickedState)
-    {
-        return win;
-    } else if (getState(x + 1, y) == clickedState
-        && getState(x + 2, y) == clickedState
-        && getState(x + 3, y) == clickedState)
-    {
-        return win;
-    } else if (getState(x, y - 3) == clickedState
-        && getState(x, y - 2) == clickedState
-        && getState(x, y - 1) == clickedState)
-    {
-        return win;
-    } else if (getState(x, y - 2) == clickedState
-        && getState(x, y - 1) == clickedState
-        && getState(x, y + 1) == clickedState)
-    {
-        return win;
-    } else if (getState(x, y - 1) == clickedState
-        && getState(x, y + 1) == clickedState
-        && getState(x, y + 2) == clickedState)
-    {
-        return win;
-    } else if (getState(x, y + 1) == clickedState
-        && getState(x, y + 2) == clickedState
-        && getState(x, y + 3) == clickedState)
-    {
-        return win;
-    } else if (getState(x - 3, y - 3) == clickedState
-        && getState(x - 2, y - 2) == clickedState
-        && getState(x - 1, y - 1) == clickedState)
-    {
-        return win;
-    } else if (getState(x - 2, y - 2) == clickedState
-        && getState(x - 1, y - 1) == clickedState
-        && getState(x + 1, y + 1) == clickedState)
-    {
-        return win;
-    } else if (getState(x - 1, y - 1) == clickedState
-        && getState(x + 1, y + 1) == clickedState
-        && getState(x + 2, y + 2) == clickedState)
-    {
-        return win;
-    } else if (getState(x + 1, y + 1) == clickedState
-        && getState(x + 2, y + 2) == clickedState
-        && getState(x + 3, y + 3) == clickedState)
-    {
-        return win;
-    } else if (getState(x - 3, y + 3) == clickedState
-        && getState(x - 2, y + 2) == clickedState
-        && getState(x - 1, y + 1) == clickedState)
-    {
-        return win;
-    } else if (getState(x - 2, y + 2) == clickedState
-        && getState(x - 1, y + 1) == clickedState
-        && getState(x + 1, y - 1) == clickedState)
-    {
-        return win;
-    } else if (getState(x - 1, y + 1) == clickedState
-        && getState(x + 1, y - 1) == clickedState
-        && getState(x + 2, y - 2) == clickedState)
-    {
-        return win;
-    } else if (getState(x + 1, y - 1) == clickedState
-        && getState(x + 2, y - 2) == clickedState
-        && getState(x + 3, y - 3) == clickedState)
-    {
-        return win;
-    }
-    0
-}
-
-fn doPlayerClick(x: i32, y: i32, player: i32) -> bool {
-    let currMove = *Move.lock().unwrap();
-    match getState(x, y) {
-        State::Activatable => {
-            if (currMove == 1 && player == 1 || currMove == 3 && player == 2) {
-                *Move.lock().unwrap() += 1;
-                *Move.lock().unwrap() %= 4;
-                if (player == *Player.lock().unwrap()) {
-                    setStatus("Opponent's turn to Place");
-                } else {
-                    setStatus("Your turn to Place");
-                }
-                setState(x, y, State::Active);
-                if (getState(x - 1, y) == State::Inactive) {
-                    setState(x - 1, y, State::Activatable);
-                } else if (getState(x - 1, y) == State::Activatable) {
-                    if (getState(x - 2, y) != State::Inactive
-                        && getState(x - 2, y) != State::Activatable
-                        && getState(x - 1, y - 1) != State::Inactive
-                        && getState(x - 1, y - 1) != State::Activatable
-                        && getState(x - 1, y + 1) != State::Inactive
-                        && getState(x - 1, y + 1) != State::Activatable)
-                    {
-                        setState(x - 1, y, State::Active);
-                    }
-                }
-                if (getState(x + 1, y) == State::Inactive) {
-                    setState(x + 1, y, State::Activatable);
-                } else if (getState(x + 1, y) == State::Activatable) {
-                    if (getState(x + 2, y) != State::Inactive
-                        && getState(x + 2, y) != State::Activatable
-                        && getState(x + 1, y - 1) != State::Inactive
-                        && getState(x + 1, y - 1) != State::Activatable
-                        && getState(x + 1, y + 1) != State::Inactive
-                        && getState(x + 1, y + 1) != State::Activatable)
-                    {
-                        setState(x + 1, y, State::Active);
-                    } else {
-                        setState(x + 1, y, State::Activatable);
-                    }
-                }
-                if (getState(x, y - 1) == State::Inactive) {
-                    setState(x, y - 1, State::Activatable);
-                } else if (getState(x, y - 1) == State::Activatable) {
-                    if (getState(x, y - 2) != State::Inactive
-                        && getState(x, y - 2) != State::Activatable
-                        && getState(x - 1, y - 1) != State::Inactive
-                        && getState(x - 1, y - 1) != State::Activatable
-                        && getState(x + 1, y - 1) != State::Inactive
-                        && getState(x + 1, y - 1) != State::Activatable)
-                    {
-                        setState(x, y - 1, State::Active);
-                    } else {
-                        setState(x, y - 1, State::Activatable);
-                    }
-                }
-                if (getState(x, y + 1) == State::Inactive) {
-                    setState(x, y + 1, State::Activatable);
-                } else if (getState(x, y + 1) == State::Activatable) {
-                    if (getState(x, y + 2) != State::Inactive
-                        && getState(x, y + 2) != State::Activatable
-                        && getState(x - 1, y + 1) != State::Inactive
-                        && getState(x - 1, y + 1) != State::Activatable
-                        && getState(x + 1, y + 1) != State::Inactive
-                        && getState(x + 1, y + 1) != State::Activatable)
-                    {
-                        setState(x, y + 1, State::Active);
-                    } else {
-                        setState(x, y + 1, State::Activatable);
-                    }
-                }
-                render();
-                return true;
-            }
-        }
-        State::Active => {
-            if (currMove == 0 && player == 1 || currMove == 2 && player == 2) {
-                *Move.lock().unwrap() += 1;
-                *Move.lock().unwrap() %= 4;
-                if (player == *Player.lock().unwrap()) {
-                    setStatus("Your turn to Expand");
-                } else {
-                    setStatus("Opponent's turn to Expand");
-                }
-                if (player == 1) {
-                    setState(x, y, State::Cross);
-                } else {
-                    setState(x, y, State::Circle);
-                }
-                render();
-                return true;
-            }
-        }
-        _ => {}
-    }
-    false
-}
-
-
 fn reset() {
     resetState();
     render();
@@ -414,13 +187,13 @@ fn reset() {
 pub fn handleKeyDown(key: &str) {
     match key {
         "ArrowUp" => {
-            *OffsetY.lock().unwrap() -= 1;
+            *OffsetY.lock().unwrap() += 1;
         }
         "ArrowRight" => {
             *OffsetX.lock().unwrap() += 1;
         }
         "ArrowDown" => {
-            *OffsetY.lock().unwrap() += 1;
+            *OffsetY.lock().unwrap() -= 1;
         }
         "ArrowLeft" => {
             *OffsetX.lock().unwrap() -= 1;
@@ -430,14 +203,18 @@ pub fn handleKeyDown(key: &str) {
             *OffsetY.lock().unwrap() = 0;
         }
         "Enter" => {
-            if (*Move.lock().unwrap() == -1) {
+            if (MAIN_GAME.lock().unwrap().Move == -1) {
                 if (*OppGameStart.lock().unwrap() == 0) {
                     *PlayerGameStart.lock().unwrap() = 1;
                     setStatus("Waiting for Opponent to Start New Game");
                     sendData("Start:");
                 } else if (*OppGameStart.lock().unwrap() == 1) {
-                    *Move.lock().unwrap() = 0;
-                    sendData("Start:");
+                    MAIN_GAME.lock().unwrap().Move = 0;
+                    if (*AI.lock().unwrap()) {
+                        callAI();
+                    } else {
+                        sendData("Start:");
+                    }
                     reset();
                 }
             }
@@ -448,25 +225,91 @@ pub fn handleKeyDown(key: &str) {
 }
 
 #[wasm_bindgen]
-pub fn handleMouseClick(mouseX: i32, mouseY: i32) {
+pub fn handleAIMove() {
+	print("Its AI time");
+	let currPlayer = *Player.lock().unwrap();
+	if (*AI.lock().unwrap() && (MAIN_GAME.lock().unwrap().Move / 2) + 1 == 3 - currPlayer) {
+		let bestMove = agent::NegaMax(
+            &mut *MAIN_GAME.lock().unwrap(),
+            agent::DEPTH,
+            -agent::INFINITY,
+            agent::INFINITY,
+        );
+        MAIN_GAME
+            .lock()
+            .unwrap()
+            .doPlayerClick(bestMove.1, bestMove.2, 3 - currPlayer);
+        print(format!("AIScore:{}", bestMove.0).as_str());
+        print(format!("AIMove:{},{}", bestMove.1, bestMove.2).as_str());
+        let win = MAIN_GAME.lock().unwrap().checkWin(bestMove.1, bestMove.2);
+        if (win == 3 - currPlayer) {
+            setStatus("Your Lost, Press Enter to Start a New Game");
+            *Player.lock().unwrap() = 3 - currPlayer;
+            MAIN_GAME.lock().unwrap().Move = -1;
+            *OppGameStart.lock().unwrap() = 1;
+            *PlayerGameStart.lock().unwrap() = 0;
+        } else {
+            MAIN_GAME
+                .lock()
+                .unwrap()
+                .doPlayerClick(bestMove.3, bestMove.4, 3 - currPlayer);
+            print(format!("AIMove:{},{}", bestMove.3, bestMove.4).as_str());
+            setStatus("Your turn to place");
+        }
+        render();
+    }
+}
+
+#[wasm_bindgen]
+pub fn handleMouseClick(mouseX: i16, mouseY: i16) {
     let gridX = (mouseX - BOX_SIZE) / BOX_SIZE;
     let gridY = (mouseY - BOX_SIZE) / BOX_SIZE;
     if (gridX >= 0 && gridY >= 0 && gridX < GRID_SIZE && gridY < GRID_SIZE) {
         let x = gridX - 7 + *OffsetX.lock().unwrap();
-        let y = gridY - 7 + *OffsetY.lock().unwrap();
+        let y = 7 - gridY + *OffsetY.lock().unwrap();
         let currPlayer = *Player.lock().unwrap();
 
-        let validClick = doPlayerClick(x, y, currPlayer);
+        let validClick = MAIN_GAME.lock().unwrap().doPlayerClick(x, y, currPlayer);
+        print(format!("Move:{},{}", x, y).as_str());
+
         if (validClick) {
-            sendData(format!("Move:{},{}", x, y).as_str());
-            let win = checkWin(x, y);
+            let currMove = MAIN_GAME.lock().unwrap().Move;
+            match currMove {
+                1 | 3 => {
+                    setStatus("Your turn to expand");
+                }
+                0 | 2 => {
+					if(*AI.lock().unwrap()) {
+						setStatus("AI's turn to place");
+					}else{
+						setStatus("Opponent's turn to place");
+					}
+				}
+                _ => {}
+            }
+
+            render();
+            if (!*AI.lock().unwrap()) {
+                sendData(format!("Move:{},{}", x, y).as_str());
+            }
+            let win = MAIN_GAME.lock().unwrap().checkWin(x, y);
             if (win == currPlayer) {
-                sendData(format!("Win:{},{}", x, y).as_str());
+                if (!*AI.lock().unwrap()) {
+                    sendData(format!("Win:{},{}", x, y).as_str());
+                }
                 setStatus("Your Won, Press Enter to Start a New Game");
                 *Player.lock().unwrap() = 3 - currPlayer;
-                *Move.lock().unwrap() = -1;
-                *OppGameStart.lock().unwrap() = 0;
+
+                MAIN_GAME.lock().unwrap().Move = -1;
+                if (*AI.lock().unwrap()) {
+                    *OppGameStart.lock().unwrap() = 1;
+                } else {
+                    *OppGameStart.lock().unwrap() = 0;
+                }
                 *PlayerGameStart.lock().unwrap() = 0;
+            }
+			if (*AI.lock().unwrap() && (MAIN_GAME.lock().unwrap().Move / 2) + 1 == 3 - currPlayer) {
+                callAI();
             }
         }
     }
@@ -475,52 +318,62 @@ pub fn handleMouseClick(mouseX: i32, mouseY: i32) {
 #[wasm_bindgen]
 pub fn handleDataIn(data: &str) {
     if (data.starts_with("Join:")) {
-        if (data.replace("Join:", "").parse::<i32>().is_err()) {
+        if (data.replace("Join:", "").parse::<i8>().is_err()) {
             return;
         }
 
-        let oppPlayer = data.replace("Join:", "").parse::<i32>().unwrap();
+        let oppPlayer = data.replace("Join:", "").parse::<i8>().unwrap();
         *Player.lock().unwrap() = 3 - oppPlayer;
         reset();
     } else if (data.starts_with("Move:")) {
         let currPlayer = *Player.lock().unwrap();
         let tuple = data.replace("Move:", "");
-        if (tuple.split(",").count() != 2
-            || tuple.split(",").next().unwrap().parse::<i32>().is_err()
-            || tuple.split(",").last().unwrap().parse::<i32>().is_err())
-        {
+        if (tuple.split(",").count() != 2 || tuple.split(",").next().unwrap().parse::<i16>().is_err() || tuple.split(",").last().unwrap().parse::<i16>().is_err()) {
             return;
         }
-        let x = tuple.split(",").next().unwrap().parse::<i32>().unwrap();
-        let y = tuple.split(",").last().unwrap().parse::<i32>().unwrap();
-        doPlayerClick(x, y, 3 - currPlayer);
-    } else if (data.starts_with("Win:")) {
-        let tuple = data.replace("Win:", "");
-        if (tuple.split(",").count() != 2
-            || tuple.split(",").next().unwrap().parse::<i32>().is_err()
-            || tuple.split(",").last().unwrap().parse::<i32>().is_err())
-        {
-            return;
-        }
+        let x = tuple.split(",").next().unwrap().parse::<i16>().unwrap();
+        let y = tuple.split(",").last().unwrap().parse::<i16>().unwrap();
+        let validClick = MAIN_GAME
+            .lock()
+            .unwrap()
+            .doPlayerClick(x, y, 3 - currPlayer);
+        if (validClick) {
+            let currMove = MAIN_GAME.lock().unwrap().Move;
+			match currMove {
+                1 | 3 => {
+                    setStatus("Opponent's turn to expand");
+                }
+                0 | 2 => {
+                    setStatus("Your turn to place");
+                }
+                _ => {}
+            }
+			render();
+		}
+	} else if (data.starts_with("Win:")) {
+		let tuple = data.replace("Win:", "");
+		if (tuple.split(",").count() != 2 || tuple.split(",").next().unwrap().parse::<i16>().is_err() || tuple.split(",").last().unwrap().parse::<i16>().is_err()) {
+			return;
+		}
 
-        let x = tuple.split(",").next().unwrap().parse::<i32>().unwrap();
-        let y = tuple.split(",").last().unwrap().parse::<i32>().unwrap();
+        let x = tuple.split(",").next().unwrap().parse::<i16>().unwrap();
+        let y = tuple.split(",").last().unwrap().parse::<i16>().unwrap();
         let currPlayer = *Player.lock().unwrap();
-        let win = checkWin(x, y);
+        let win = MAIN_GAME.lock().unwrap().checkWin(x, y);
         if (win == 3 - currPlayer) {
             setStatus("You Lost, Press Enter to Start a New Game");
             *Player.lock().unwrap() = 3 - currPlayer;
-            *Move.lock().unwrap() = -1;
+            MAIN_GAME.lock().unwrap().Move = -1;
             *OppGameStart.lock().unwrap() = 0;
             *PlayerGameStart.lock().unwrap() = 0;
         }
     } else if (data.starts_with("Start:")) {
-        if (*Move.lock().unwrap() == -1) {
+        if (MAIN_GAME.lock().unwrap().Move == -1) {
             if (*PlayerGameStart.lock().unwrap() == 0) {
                 *OppGameStart.lock().unwrap() = 1;
                 setStatus("Opponent is waiting for you to Start New Game, Press Enter to Start a New Game");
             } else if (*PlayerGameStart.lock().unwrap() == 1) {
-                *Move.lock().unwrap() = 0;
+                MAIN_GAME.lock().unwrap().Move = 0;
                 print("reset?");
                 reset();
             }
@@ -530,13 +383,26 @@ pub fn handleDataIn(data: &str) {
 
 #[wasm_bindgen]
 pub fn createRequest() {
-    getConnectionRequest();
+    if (!*AI.lock().unwrap()) {
+        getConnectionRequest();
+    }
 }
 #[wasm_bindgen]
 pub fn createResponse() {
-    getConnectionResponse();
+    if (!*AI.lock().unwrap()) {
+        getConnectionResponse();
+    }
 }
 #[wasm_bindgen]
 pub fn beginConnection() {
-    setRemoteDesc();
+    if (!*AI.lock().unwrap()) {
+        setRemoteDesc();
+    }
+}
+
+#[wasm_bindgen]
+pub fn enableAI() {
+    *AI.lock().unwrap() = true;
+    *Player.lock().unwrap() = 1;
+    reset();
 }

@@ -1,27 +1,34 @@
 /* tslint:disable */
 /* eslint-disable */
+export function setHook(): void;
 export function render(): void;
 export function handleKeyDown(key: string): void;
+export function handleAIMove(): void;
 export function handleMouseClick(mouseX: number, mouseY: number): void;
 export function handleDataIn(data: string): void;
 export function createRequest(): void;
 export function createResponse(): void;
 export function beginConnection(): void;
+export function enableAI(): void;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
   readonly memory: WebAssembly.Memory;
+  readonly setHook: () => void;
   readonly render: () => void;
   readonly handleKeyDown: (a: number, b: number) => void;
+  readonly handleAIMove: () => void;
   readonly handleMouseClick: (a: number, b: number) => void;
   readonly handleDataIn: (a: number, b: number) => void;
   readonly createRequest: () => void;
   readonly createResponse: () => void;
   readonly beginConnection: () => void;
-  readonly __wbindgen_export_0: WebAssembly.Table;
+  readonly enableAI: () => void;
+  readonly __wbindgen_free: (a: number, b: number, c: number) => void;
   readonly __wbindgen_malloc: (a: number, b: number) => number;
   readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+  readonly __wbindgen_export_3: WebAssembly.Table;
   readonly __wbindgen_start: () => void;
 }
 

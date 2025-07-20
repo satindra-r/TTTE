@@ -40,8 +40,8 @@ export function getWindowHeight() {
 	return window.innerHeight;
 }
 
-export function randRange(x, y) {
-	return Math.random() * (y - x) + x;
+export function rand() {
+	return Math.random();
 }
 
 export function drawRect(x, y, w, h, r, g, b, t) {
@@ -245,6 +245,13 @@ export function sendData(data) {
 	if (dataChannel && dataChannel.readyState === "open") {
 		dataChannel.send(data);
 	}
+}
+
+export function callAI(){
+	setTimeout(()=>{
+		textArea.dispatchEvent(new Event("AI"));
+	},1000);
+
 }
 
 export function setStatus(data) {
